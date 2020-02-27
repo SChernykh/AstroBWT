@@ -70,17 +70,36 @@ __declspec(noinline) void sort_indices(int N, const uint8_t* v, uint64_t* indice
 		indices[counters[1][data >> (64 - COUNTING_SORT_BITS)]--] = data;
 	}
 
+	auto smaller = [v](uint64_t a, uint64_t b)
+	{
+		const uint64_t value_a = a >> 21;
+		const uint64_t value_b = b >> 21;
+
+		if (value_a < value_b)
+			return true;
+
+		if (value_a > value_b)
+			return false;
+
+		const uint64_t data_a = _byteswap_uint64(*reinterpret_cast<const uint64_t*>(v + (a % (1 << 21)) + 5));
+		const uint64_t data_b = _byteswap_uint64(*reinterpret_cast<const uint64_t*>(v + (b % (1 << 21)) + 5));
+		return (data_a < data_b);
+	};
+
 	for (int i = 1; i < N; ++i)
 	{
 		const uint64_t t = indices[i];
 		int j = i - 1;
-		if (t < indices[j])
+		uint64_t prev_t = indices[j];
+
+		if (smaller(t, prev_t))
 		{
 			do
 			{
-				indices[j + 1] = indices[j];
+				indices[j + 1] = prev_t;
 				--j;
-			} while ((j >= 0) && (t < indices[j]));
+				prev_t = indices[j];
+			} while ((j >= 0) && (smaller(t, prev_t)));
 			indices[j + 1] = t;
 		}
 	}
@@ -99,7 +118,6 @@ void test_sort_indices(int thread_index)
 	GetNumaProcessorNode(thread_index, &node_number);
 
 	std::mt19937 r;
-	r.seed(2);
 
 	void* buf = VirtualAllocExNuma(GetCurrentProcess(), nullptr, 24 * 1024 * 1024, MEM_RESERVE | MEM_COMMIT | MEM_LARGE_PAGES, PAGE_READWRITE, node_number);
 	if (!buf)
@@ -149,7 +167,7 @@ void test_sort_indices(int thread_index)
 		dt += static_cast<double>(t2.QuadPart - t1.QuadPart) / f.QuadPart;
 		dt_sais += static_cast<double>(t3.QuadPart - t2.QuadPart) / f.QuadPart;
 
-		printf("Iteration %6d: sort_indices = %7.03f ms, SA-IS = %7.03f ms, %6.02f%% incorrect\r", iter, (dt / total_tests) * 1000.0, (dt_sais / total_tests) * 1000.0, (wrong_tests * 100.0 / total_tests));
+		printf("Iteration %6d: sort_indices = %7.03f ms, SA-IS = %7.03f ms, %d incorrect\r", iter, (dt / total_tests) * 1000.0, (dt_sais / total_tests) * 1000.0, wrong_tests);
 	}
 
 	VirtualFree(buf, 0, MEM_RELEASE);
@@ -199,9 +217,9 @@ bool sha3_test()
 void bwt(const char* input, char* output)
 {
 	int len = static_cast<int>(strlen(input));
-	uint8_t* v = new uint8_t[len + 8];
+	uint8_t* v = new uint8_t[len + 16];
 	memcpy(v, input, len);
-	*(uint64_t*)(v + len) = 0;
+	*(__m128i*)(v + len) = _mm_setzero_si128();
 
 	uint64_t* indices = new uint64_t[len + 1];
 	uint64_t* tmp_indices = new uint64_t[len + 1];
@@ -267,11 +285,11 @@ bool astrobwt_test()
 
 	const uint64_t iv = 0;
 
-	uint8_t* stage1_output = new uint8_t[STAGE1_SIZE + 8];
+	uint8_t* stage1_output = new uint8_t[STAGE1_SIZE + 16];
 	{
 		ZeroTier::Salsa20 s(key, &iv);
 		s.XORKeyStream(stage1_output, STAGE1_SIZE);
-		*(uint64_t*)(stage1_output + STAGE1_SIZE) = 0;
+		*(__m128i*)(stage1_output + STAGE1_SIZE) = _mm_setzero_si128();
 	}
 
 	if (memcmp(stage1_output + STAGE1_SIZE - sizeof(check_stage1), check_stage1, sizeof(check_stage1)) != 0)
@@ -320,11 +338,11 @@ bool astrobwt_test()
 	for (int i = 0; i < 64; ++i)
 		check_stage2[i] = (decode_hex(check_stage2_str[i * 2]) << 4) | decode_hex(check_stage2_str[i * 2 + 1]);
 
-	uint8_t* stage2_output = new uint8_t[stage2_size + 8];
+	uint8_t* stage2_output = new uint8_t[stage2_size + 16];
 	{
 		ZeroTier::Salsa20 s(key, &iv);
 		s.XORKeyStream(stage2_output, stage2_size);
-		*(uint64_t*)(stage2_output + stage2_size) = 0;
+		*(__m128i*)(stage2_output + stage2_size) = _mm_setzero_si128();
 	}
 
 	if (memcmp(stage2_output + stage2_size - sizeof(check_stage2), check_stage2, sizeof(check_stage2)) != 0)
@@ -382,7 +400,7 @@ void astrobwt(const void* input_data, uint32_t input_size, void* scratchpad, uin
 		const uint64_t iv = 0;
 		ZeroTier::Salsa20 s(key, &iv);
 		s.XORKeyStream(stage1_output, STAGE1_SIZE);
-		*(uint64_t*)(stage1_output + STAGE1_SIZE) = 0;
+		*(__m128i*)(stage1_output + STAGE1_SIZE) = _mm_setzero_si128();
 	}
 
 	sort_indices(STAGE1_SIZE + 1, stage1_output, indices, tmp_indices);
@@ -400,7 +418,7 @@ void astrobwt(const void* input_data, uint32_t input_size, void* scratchpad, uin
 		const uint64_t iv = 0;
 		ZeroTier::Salsa20 s(key, &iv);
 		s.XORKeyStream(stage2_output, stage2_size);
-		*(uint64_t*)(stage2_output + stage2_size) = 0;
+		*(__m128i*)(stage2_output + stage2_size) = _mm_setzero_si128();
 	}
 
 	sort_indices(stage2_size + 1, stage2_output, indices, tmp_indices);
