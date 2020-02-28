@@ -90,22 +90,25 @@ __declspec(noinline) void sort_indices(int N, const uint8_t* v, uint64_t* indice
 		return (data_a < data_b);
 	};
 
+	uint64_t prev_t = indices[0];
 	for (int i = 1; i < N; ++i)
 	{
-		const uint64_t t = indices[i];
-		int j = i - 1;
-		uint64_t prev_t = indices[j];
-
+		uint64_t t = indices[i];
 		if (smaller(t, prev_t))
 		{
+			int j = i - 1;
 			do
 			{
 				indices[j + 1] = prev_t;
 				--j;
+				if (j < 0)
+					break;
 				prev_t = indices[j];
-			} while ((j >= 0) && (smaller(t, prev_t)));
+			} while (smaller(t, prev_t));
 			indices[j + 1] = t;
+			t = indices[i];
 		}
+		prev_t = t;
 	}
 }
 
