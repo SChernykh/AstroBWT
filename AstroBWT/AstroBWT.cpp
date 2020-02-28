@@ -96,6 +96,7 @@ __declspec(noinline) void sort_indices(int N, const uint8_t* v, uint64_t* indice
 		uint64_t t = indices[i];
 		if (smaller(t, prev_t))
 		{
+			const uint64_t t2 = prev_t;
 			int j = i - 1;
 			do
 			{
@@ -106,7 +107,7 @@ __declspec(noinline) void sort_indices(int N, const uint8_t* v, uint64_t* indice
 				prev_t = indices[j];
 			} while (smaller(t, prev_t));
 			indices[j + 1] = t;
-			t = indices[i];
+			t = t2;
 		}
 		prev_t = t;
 	}
