@@ -30,6 +30,10 @@
 #include "sha3.h"
 #include "Salsa20.hpp"
 
+constexpr int STAGE1_SIZE = 147253;
+constexpr int ALLOCATION_SIZE = (STAGE1_SIZE + 1048576) + (128 - (STAGE1_SIZE & 63));
+constexpr int SCRATCHPAD_SIZE = ((ALLOCATION_SIZE * 17 + (1 << 21) - 1) >> 21) << 21;
+
 constexpr int COUNTING_SORT_BITS = 10;
 constexpr int COUNTING_SORT_SIZE = 1 << COUNTING_SORT_BITS;
 
@@ -105,7 +109,7 @@ __declspec(noinline) void sort_indices(int N, const uint8_t* v, uint64_t* indice
 	}
 }
 
-constexpr int N = 1117946;
+constexpr int N = STAGE1_SIZE + 1048575;
 
 LARGE_INTEGER f, t1, t2, t3;
 
@@ -119,9 +123,9 @@ void test_sort_indices(int thread_index)
 
 	std::mt19937 r;
 
-	void* buf = VirtualAllocExNuma(GetCurrentProcess(), nullptr, 24 * 1024 * 1024, MEM_RESERVE | MEM_COMMIT | MEM_LARGE_PAGES, PAGE_READWRITE, node_number);
+	void* buf = VirtualAllocExNuma(GetCurrentProcess(), nullptr, SCRATCHPAD_SIZE, MEM_RESERVE | MEM_COMMIT | MEM_LARGE_PAGES, PAGE_READWRITE, node_number);
 	if (!buf)
-		buf = VirtualAllocExNuma(GetCurrentProcess(), nullptr, 24 * 1024 * 1024, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE, node_number);
+		buf = VirtualAllocExNuma(GetCurrentProcess(), nullptr, SCRATCHPAD_SIZE, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE, node_number);
 
 	uint8_t* allocation_ptr = (uint8_t*)buf;
 
@@ -134,9 +138,7 @@ void test_sort_indices(int thread_index)
 	allocation_ptr += N1 * sizeof(uint64_t);
 
 	uint64_t* tmp_indices = (uint64_t*)allocation_ptr;
-	allocation_ptr += N1 * sizeof(uint64_t);
-
-	int* sais_indices = (int*)allocation_ptr;
+	int* sais_indices = (int*)tmp_indices;
 
 	double dt = 0.0;
 	double dt_sais = 0.0;
@@ -260,8 +262,6 @@ bool bwt_test()
 	return true;
 }
 
-constexpr int STAGE1_SIZE = 69371;
-
 bool astrobwt_test()
 {
 	uint8_t key[32];
@@ -279,13 +279,17 @@ bool astrobwt_test()
 	}
 
 	uint8_t check_stage1[64];
-	uint8_t check_stage1_str[] = "855ba9c8d03ef31edd836b9900f5da29e8421d9d28920cd5d76961d02da25cd947f8efb81fc1ec86336bcdd46c4b247f0e728214a305e0594a2e836ee4247872";
+	uint8_t check_stage1_str[] = "a683f2bb64611420c209db3bacb17637a0e841fa7791fd5721e7692e610a525d80b83d1ae4e61158f0c2f6ccf594c5815c0384a915bd5fbe8d309a4a34bbd611";
 	for (int i = 0; i < 64; ++i)
 		check_stage1[i] = (decode_hex(check_stage1_str[i * 2]) << 4) | decode_hex(check_stage1_str[i * 2 + 1]);
 
 	const uint64_t iv = 0;
 
-	uint8_t* stage1_output = new uint8_t[STAGE1_SIZE + 16];
+	std::vector<uint8_t> buf(SCRATCHPAD_SIZE);
+	uint8_t* p = buf.data();
+
+	uint8_t* stage1_output = p;
+	p += STAGE1_SIZE + 64;
 	{
 		ZeroTier::Salsa20 s(key, &iv);
 		s.XORKeyStream(stage1_output, STAGE1_SIZE);
@@ -298,8 +302,10 @@ bool astrobwt_test()
 		return false;
 	}
 
-	uint64_t* indices = new uint64_t[STAGE1_SIZE + 1048575 + 1];
-	uint64_t* tmp_indices = new uint64_t[STAGE1_SIZE + 1048575 + 1];
+	uint64_t* indices = (uint64_t*) p;
+	p += (STAGE1_SIZE + 1048575 + 1 + 64) * sizeof(uint64_t);
+	uint64_t* tmp_indices = (uint64_t*) p;
+	p += (STAGE1_SIZE + 1048575 + 1 + 64) * sizeof(uint64_t);
 
 	sort_indices(STAGE1_SIZE + 1, stage1_output, indices, tmp_indices);
 
@@ -316,7 +322,7 @@ bool astrobwt_test()
 	sha3_HashBuffer(256, SHA3_FLAGS_NONE, stage1_result, STAGE1_SIZE + 1, key, sizeof(key));
 
 	uint8_t check_key2[32];
-	uint8_t check_str2[] = "8e36ca3df98871e2f5ab60b5311ea9ebe84a993169da5c3788ad0bee3b63d13a";
+	uint8_t check_str2[] = "99a0cdad2ecf83caa3f07328965adac86d4eab23ef8e0d4757fa935ff52cf063";
 	for (int i = 0; i < 32; ++i)
 		check_key2[i] = (decode_hex(check_str2[i * 2]) << 4) | decode_hex(check_str2[i * 2 + 1]);
 
@@ -327,18 +333,18 @@ bool astrobwt_test()
 	}
 
 	int stage2_size = STAGE1_SIZE + (*(uint32_t*)(key) & 0xfffff);
-	if (stage2_size != 738697)
+	if (stage2_size != 1040334)
 	{
 		std::cout << "AstroBWT test failed" << std::endl;
 		return false;
 	}
 
 	uint8_t check_stage2[64];
-	uint8_t check_stage2_str[] = "0fa2586c9f610d4cae69ab4b6a61e0a75a3f8170e43d35580c6a4bc7891fddead7c9a235084b844197e5397153407cdb100006a0ee8f7b7034c289f12a7dd938";
+	uint8_t check_stage2_str[] = "09866f039730b5e3929df4b3fb1f284a76f9a33916660d9ddf2b5f6b9908b89f63871c69d3c6d6e928d21edcf2fa7bb85e6bbddb2626b94f904ed61740d46d94";
 	for (int i = 0; i < 64; ++i)
 		check_stage2[i] = (decode_hex(check_stage2_str[i * 2]) << 4) | decode_hex(check_stage2_str[i * 2 + 1]);
 
-	uint8_t* stage2_output = new uint8_t[stage2_size + 16];
+	uint8_t* stage2_output = p;
 	{
 		ZeroTier::Salsa20 s(key, &iv);
 		s.XORKeyStream(stage2_output, stage2_size);
@@ -353,9 +359,6 @@ bool astrobwt_test()
 
 	sort_indices(stage2_size + 1, stage2_output, indices, tmp_indices);
 
-	//int* sais_indices = (int*)indices;
-	//sais(stage2_output, sais_indices, stage2_size + 1);
-
 	uint8_t* stage2_result = (uint8_t*)(tmp_indices);
 	for (int i = 0; i <= stage2_size; ++i)
 	{
@@ -368,9 +371,8 @@ bool astrobwt_test()
 
 	sha3_HashBuffer(256, SHA3_FLAGS_NONE, stage2_result, stage2_size + 1, key, sizeof(key));
 
-	// cbdc6270d08d9c151dc4cd98ba23f4d7cf46783644c82e4001f24b2718d9d7c2
 	uint8_t check_key3[32];
-	uint8_t check_str3[] = "cbdc6270d08d9c151dc4cd98ba23f4d7cf46783644c82e4001f24b2718d9d7c2";
+	uint8_t check_str3[] = "cfc5155f4119ff5e11c71e907ce6708e1d39f0fe08b3a88ecb949abcc0d80e50";
 	for (int i = 0; i < 32; ++i)
 		check_key3[i] = (decode_hex(check_str3[i * 2]) << 4) | decode_hex(check_str3[i * 2 + 1]);
 
@@ -389,8 +391,8 @@ void astrobwt(const void* input_data, uint32_t input_size, void* scratchpad, uin
 	uint8_t* scratchpad_ptr = (uint8_t*)(scratchpad) + 64;
 	uint8_t* stage1_output = scratchpad_ptr;
 	uint8_t* stage2_output = scratchpad_ptr;
-	uint64_t* indices = (uint64_t*)(scratchpad_ptr + 1118016);
-	uint64_t* tmp_indices = (uint64_t*)(scratchpad_ptr + 10062208);
+	uint64_t* indices = (uint64_t*)(scratchpad_ptr + ALLOCATION_SIZE);
+	uint64_t* tmp_indices = (uint64_t*)(scratchpad_ptr + ALLOCATION_SIZE * 9);
 	uint8_t* stage1_result = (uint8_t*)(tmp_indices);
 	uint8_t* stage2_result = (uint8_t*)(tmp_indices);
 
@@ -451,9 +453,9 @@ void astrobwt_bench(int thread_index, int total_threads, volatile long* thread_c
 
 	std::mt19937 r;
 
-	void* scratchpad = VirtualAllocExNuma(GetCurrentProcess(), nullptr, 20 * 1024 * 1024, MEM_RESERVE | MEM_COMMIT | MEM_LARGE_PAGES, PAGE_READWRITE, node_number);
+	void* scratchpad = VirtualAllocExNuma(GetCurrentProcess(), nullptr, SCRATCHPAD_SIZE, MEM_RESERVE | MEM_COMMIT | MEM_LARGE_PAGES, PAGE_READWRITE, node_number);
 	if (!scratchpad)
-		scratchpad = VirtualAllocExNuma(GetCurrentProcess(), nullptr, 20 * 1024 * 1024, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE, node_number);
+		scratchpad = VirtualAllocExNuma(GetCurrentProcess(), nullptr, SCRATCHPAD_SIZE, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE, node_number);
 
 	uint8_t input[76];
 	uint8_t hash[32];
@@ -503,11 +505,11 @@ int main(int argc, char** argv)
 		return 1;
 
 	{
-		void* scratchpad = VirtualAlloc(nullptr, 20 * 1024 * 1024, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+		void* scratchpad = VirtualAlloc(nullptr, SCRATCHPAD_SIZE, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
 		uint8_t hash[32];
 		astrobwt(nullptr, 0, scratchpad, hash);
 		VirtualFree(scratchpad, 0, MEM_RELEASE);
-		if (memcmp(hash, "\xcb\xdc\x62\x70\xd0\x8d\x9c\x15\x1d\xc4\xcd\x98\xba\x23\xf4\xd7\xcf\x46\x78\x36\x44\xc8\x2e\x40\x01\xf2\x4b\x27\x18\xd9\xd7\xc2", sizeof(hash)) != 0)
+		if (memcmp(hash, "\xcf\xc5\x15\x5f\x41\x19\xff\x5e\x11\xc7\x1e\x90\x7c\xe6\x70\x8e\x1d\x39\xf0\xfe\x08\xb3\xa8\x8e\xcb\x94\x9a\xbc\xc0\xd8\x0e\x50", sizeof(hash)) != 0)
 		{
 			std::cout << "astrobwt test failed" << std::endl;
 			return 1;
